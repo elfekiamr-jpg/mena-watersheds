@@ -6,8 +6,9 @@ its upstream watershed. It also computes morphology parameters and can build a P
 report.
 
 It grew out of the Egypt build of Manabi (itself a sibling of the Saudi Arabia
-build). This build does **delineation only**. The runoff features (hydrologic soil
-group, composite curve number, GIUH) are still in the code but switched off with
+build). This build does **delineation and morphology only**, including the
+geomorphological unit hydrograph (GIUH). The runoff features (hydrologic soil group,
+composite curve number) are still in the code but switched off with
 `RUNOFF_ENABLED`. See VERCEL_DEPLOY.md.
 
 ## Two ways to run it

@@ -305,6 +305,10 @@
       <div class="label" style="margin-bottom:8px;">Morphological parameters</div>
       <div class="morph-table" id="morph-table"></div>
     </div>
+    <div class="morph-section" id="giuh-section" style="display:none;">
+      <div class="label" style="margin-bottom:8px;">Unit hydrograph (GIUH)</div>
+      <div class="morph-table" id="giuh-table"></div>
+    </div>
     <div class="downloads">
       <button class="dl-btn" id="dl-kml">Download for Google Earth <span class="arrow">KML ↓</span></button>
       <button class="dl-btn" id="dl-watershed">Download watershed <span class="arrow">GeoJSON ↓</span></button>
@@ -568,6 +572,36 @@ const MORPH_LABELS = {
   lag_time_min: ['Time lag', 'min'],
 };
   
+const GIUH_LABELS = {
+  omega: ['Basin order (Strahler)', ''],
+  RB: ['Bifurcation ratio R<sub>B</sub>', ''],
+  RL: ['Length ratio R<sub>L</sub>', ''],
+  RA: ['Area ratio R<sub>A</sub>', ''],
+  n_shape: ['Gamma shape n', ''],
+  k_scale_hr: ['Gamma scale k', 'h'],
+  tp_min: ['Time to peak t<sub>p</sub>', 'min'],
+  qp_per_hr: ['Peak ordinate q<sub>p</sub>', '/h'],
+};
+
+function renderGiuh(giuh){
+  const section = document.getElementById('giuh-section');
+  const table = document.getElementById('giuh-table');
+  if (!giuh){
+    section.style.display = 'none';
+    table.innerHTML = '';
+    return;
+  }
+  table.innerHTML = Object.entries(GIUH_LABELS)
+    .filter(([key]) => giuh[key] !== undefined && giuh[key] !== null)
+    .map(([key, [label, unit]]) => `
+      <div class="morph-row">
+        <span class="morph-label">${label}</span>
+        <span class="morph-value">${giuh[key]}${unit ? ' ' + unit : ''}</span>
+      </div>
+    `).join('');
+  section.style.display = 'block';
+}
+
 function renderMorphology(morph){
   const section = document.getElementById('morph-section');
   const table = document.getElementById('morph-table');
@@ -792,6 +826,7 @@ async function runDelineation(lat, lng){
       mode === 'up' ? 'Upstream watershed' : 'Downstream flow path';
     document.getElementById('lowres-note').style.display = data.precision === 'low' ? 'block' : 'none';
     renderMorphology(data.morphology);
+    renderGiuh(data.giuh);
     lastMorphology = data.morphology;
     lastOutletLat = (props.outlet_lat != null) ? props.outlet_lat : lat;
     lastOutletLng = (props.outlet_lng != null) ? props.outlet_lng : lng;

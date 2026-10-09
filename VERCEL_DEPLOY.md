@@ -45,11 +45,21 @@ likely to fall back to low resolution.
 
 ## Runoff features are switched off
 
-This build does delineation only. The runoff features (the "Runoff group" map
-overlay, plus the hydrologic soil group map, composite curve number and GIUH
-sections of the PDF report) are still in the code but disabled by
-`RUNOFF_ENABLED = False` in **both** `api/index.py` and `index.html`. Set both to
-`True` to bring them back.
+This build does delineation and morphology only. The GIUH (geomorphological unit
+hydrograph) counts as morphology and stays on, in both the result panel and the PDF.
+The runoff features (the "Runoff group" map overlay, plus the hydrologic soil group
+map and composite curve number sections of the PDF report) are still in the code but
+disabled by `RUNOFF_ENABLED = False` in **both** `api/index.py` and `index.html`. Set
+both to `True` to bring them back.
+
+## Place names and fonts
+
+Place names come from OSM Nominatim with `accept-language=en`. Many MENA villages
+and rural districts only have an Arabic or Persian name in OSM, so the report uses
+the most specific address part that has an English name (e.g. the county). It falls
+back to the local name only if none does. Non-Latin text in the PDF is drawn in
+DejaVu Sans (bundled in `api/fonts/`, included via `includeFiles` in `vercel.json`),
+shaped and ordered right-to-left by `arabic-reshaper` and `python-bidi`.
 
 ## Steps
 

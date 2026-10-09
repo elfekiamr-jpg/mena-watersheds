@@ -14,11 +14,10 @@ RUN pip install --no-cache-dir -r requirements.txt gunicorn
 # click on this site will land in) into the image at build time. This is
 # a much bigger download than KSA's single basin 29 was, since basin 17
 # covers the entire transboundary Nile system (Sudan/Ethiopia/Uganda too,
-# not just Egypt) — time this step before you commit to a hosting plan.
-# Sinai/Red Sea/Western Desert clicks (basins 29, 15, 21, 11) are NOT
+# not just Egypt).
+# The other MENA megabasins (11, 14, 15, 16, 21, 22, 28, 29) are NOT
 # baked in here and will download on first click instead; add them to
-# this RUN line (comma-separated `downloader()` calls) if you'd rather
-# bake all five in and avoid any runtime download.
+# this RUN line (`downloader()` calls) to bake them in, at 1-3 GB each.
 ENV DELINEATOR_DATA_DIR=/data
 RUN mkdir -p /data && \
     python -c "from delineator.core import downloader; downloader(17)"

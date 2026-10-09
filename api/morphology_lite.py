@@ -253,4 +253,4 @@ def delineate():
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def catch_all(path):
-    return jsonify({'message': 'Egypt Watersheds API active'}), 200
+    return jsonify({'message': 'MENA Watersheds API active'}), 200

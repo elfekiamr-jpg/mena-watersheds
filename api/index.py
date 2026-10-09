@@ -13,6 +13,20 @@ from collections import defaultdict, deque
 app = Flask(__name__)
 CORS(app)
 
+# The MENA build does delineation only. Runoff features (hydrologic soil
+# group, composite curve number, GIUH) are kept in the code but switched off;
+# set True to restore them, along with RUNOFF_ENABLED in index.html.
+RUNOFF_ENABLED = False
+
+# Clickable coverage: Morocco/Mauritania to Iran, Turkey to Yemen/Sudan, with a
+# small buffer. (lon_min, lat_min, lon_max, lat_max). Matches MENA_BOUNDS in index.html.
+MENA_BBOX = (-17.5, 8.5, 63.5, 42.5)
+
+
+def in_mena_bbox(lat, lng):
+    lon_min, lat_min, lon_max, lat_max = MENA_BBOX
+    return lon_min <= lng <= lon_max and lat_min <= lat <= lat_max
+
 
 # ---------- morphology helpers (pure Python, no geopandas) ----------
 
@@ -933,7 +947,7 @@ def fetch_environmental_context(lat, lng):
             f_land = ex.submit(fetch_land_use_population, lat, lng)
             f_humidity = ex.submit(fetch_monthly_humidity, lat, lng)
             f_lcsoil = ex.submit(fetch_landcover_soil_labels, lat, lng)
-            f_hsg = ex.submit(fetch_hsg_point_class, lat, lng)
+            f_hsg = ex.submit(fetch_hsg_point_class, lat, lng) if RUNOFF_ENABLED else None
             for f in (f_weather, f_climate, f_land):
                 try:
                     result.update(f.result(timeout=20) or {})
@@ -944,7 +958,7 @@ def fetch_environmental_context(lat, lng):
             except Exception:
                 result['monthly_humidity'] = None
             try:
-                result['hsg_class'] = f_hsg.result(timeout=15)
+                result['hsg_class'] = f_hsg.result(timeout=15) if f_hsg else None
             except Exception:
                 result['hsg_class'] = None
             try:
@@ -992,6 +1006,9 @@ ENV_LABELS = [
     ('Wind speed (current)', 'km/h', 'wind_speed_kmh', None),
     ('Wind direction (current)', '', 'wind_direction_compass', None),
 ]
+_RUNOFF_ENV_KEYS = {'Runoff', 'hsg_class'}
+if not RUNOFF_ENABLED:
+    ENV_LABELS = [row for row in ENV_LABELS if row[0] not in _RUNOFF_ENV_KEYS and row[2] not in _RUNOFF_ENV_KEYS]
 
 
 def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojson, morphology, geo_info, wiki_info, env_info=None, cn_info=None, giuh_info=None, relief_info=None):
@@ -1027,10 +1044,12 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
             _f_sat = _img_ex.submit(fetch_satellite_image_bytes, *map_bbox, width_px=900)
             _f_lc = _img_ex.submit(fetch_landcover_image_bytes, *map_bbox, width_px=900)
             _f_soil = _img_ex.submit(fetch_soil_image_bytes, *map_bbox, width_px=900)
-            _f_hsg = _img_ex.submit(fetch_hsg_image_bytes, *map_bbox, width_px=900)
+            _f_hsg = _img_ex.submit(fetch_hsg_image_bytes, *map_bbox, width_px=900) if RUNOFF_ENABLED else None
             _f_soil_legend = _img_ex.submit(fetch_soil_legend_bytes)
 
             def _wait(fut, timeout=20):
+                if fut is None:
+                    return None
                 try:
                     return fut.result(timeout=timeout)
                 except Exception:
@@ -1206,209 +1225,135 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
     y = _draw_soil_legend(c, x, y, map_w, legend_bytes=prefetched_images.get('soil_legend'))
     y -= 10 * mm
 
-    # ---- Map 5: hydrologic soil group (SCS runoff class) ----
-    if y < margin + map_h + 22 * mm:
-        c.showPage()
-        y = page_h - margin
-    map_top5 = y
-    c.setStrokeColor(colors.HexColor('#dddddd'))
-    c.setFillColor(colors.HexColor('#f6f4ef'))
-    c.rect(x, map_top5 - map_h, map_w, map_h, fill=1, stroke=1)
-    try:
-        bbox5 = _draw_wms_overlay_map(c, watershed_geojson, rivers_geojson, outlets_geojson,
-                                       x, map_top5 - map_h, map_w, map_h, TEAL, TEAL_DARK, GOLD,
-                                       fetch_hsg_image_bytes,
-                                       img_bytes=prefetched_images.get('hsg'))
-        _draw_extent_labels(c, *bbox5, x, map_top5 - map_h, map_w, map_h)
-    except Exception:
-        c.setFillColor(GREY)
-        c.setFont('Helvetica', 9)
-        c.drawCentredString(x + map_w / 2, map_top5 - map_h / 2, 'Hydrologic soil group layer unavailable')
-
-    c.setFillColor(GREY)
-    c.setFont('Helvetica-Oblique', 7)
-    c.drawString(x, map_top5 - map_h - 5 * mm,
-                 'Map 5 — hydrologic soil group (SCS/NRCS runoff-potential class, HYSOGs250m, 250m resolution) — used by the curve-number runoff method.')
-    y = map_top5 - map_h - 9 * mm
-    y = _draw_hsg_legend(c, x, y, map_w)
-    y -= 6 * mm
-
-    # Classification basis — what determines the A-D class, so the map isn't a black box.
-    c.setFillColor(DARK)
-    c.setFont('Helvetica-Bold', 8.5)
-    c.drawString(x, y, 'How the class is determined')
-    y -= 4.5 * mm
-    hsg_basis_text = (
-        "Classes are based on the soil's intrinsic ability to absorb water, not on rainfall, land cover, or slope: "
-        '(1) soil texture — sand/silt/clay proportions, the main driver of infiltration rate; '
-        '(2) depth to a restrictive layer — bedrock, hardpan, or another dense layer that blocks downward drainage; '
-        '(3) depth to the water table — how much unsaturated capacity the soil has left; and '
-        '(4) saturated hydraulic conductivity (Ksat) — the direct physical measurement the other three are proxies for. '
-        'A = deep, well-drained, high infiltration (low runoff); D = clay-dominated, shallow, or a high water table, '
-        'with infiltration severely restricted (high runoff). This dataset estimates the class from texture and bedrock-depth '
-        'data, since Ksat is not measured directly at global scale.'
-    )
-    c.setFont('Helvetica', 7.5)
-    c.setFillColor(colors.HexColor('#333333'))
-    hsg_lines = simpleSplit(hsg_basis_text, 'Helvetica', 7.5, map_w)
-    for line in hsg_lines:
-        if y < margin + 8 * mm:
+    if RUNOFF_ENABLED:
+        # ---- Map 5: hydrologic soil group (SCS runoff class) ----
+        if y < margin + map_h + 22 * mm:
             c.showPage()
             y = page_h - margin
-            c.setFont('Helvetica', 7.5)
-            c.setFillColor(colors.HexColor('#333333'))
-        c.drawString(x, y, line)
-        y -= 3.6 * mm
-    y -= 8 * mm
-
-    # ---- Composite curve number (SCS/NRCS method) ----
-    if y < margin + 40 * mm:
-        c.showPage()
-        y = page_h - margin
-    c.setFillColor(DARK)
-    c.setFont('Helvetica-Bold', 13)
-    c.drawString(x, y, 'Composite curve number (SCS/NRCS method)')
-    y -= 7 * mm
-
-    if cn_info and cn_info.get('composite_cn') is not None:
-        cn_val = cn_info['composite_cn']
-        n_valid = cn_info.get('n_valid', 0)
-        n_sampled = cn_info.get('n_sampled', 0)
-        c.setFillColor(TEAL_DARK)
-        c.setFont('Helvetica-Bold', 22)
-        c.drawString(x, y - 5 * mm, f'CN = {cn_val:.0f}')
-        c.setFillColor(GREY)
-        c.setFont('Helvetica', 8.5)
-        c.drawString(x + 40 * mm, y - 3.5 * mm,
-                     f'Area-weighted across {n_valid} of {n_sampled} sampled points inside the watershed boundary,')
-        c.drawString(x + 40 * mm, y - 7.5 * mm,
-                     'each classified by land cover and hydrologic soil group, per TR-55.')
-        y -= 15 * mm
-
-        breakdown = cn_info.get('breakdown') or []
-        if breakdown:
-            col_a, col_b, col_c, col_d = x, x + 62 * mm, x + 90 * mm, x + 118 * mm
-            c.setFont('Helvetica-Bold', 8.5)
+        map_top5 = y
+        c.setStrokeColor(colors.HexColor('#dddddd'))
+        c.setFillColor(colors.HexColor('#f6f4ef'))
+        c.rect(x, map_top5 - map_h, map_w, map_h, fill=1, stroke=1)
+        try:
+            bbox5 = _draw_wms_overlay_map(c, watershed_geojson, rivers_geojson, outlets_geojson,
+                                           x, map_top5 - map_h, map_w, map_h, TEAL, TEAL_DARK, GOLD,
+                                           fetch_hsg_image_bytes,
+                                           img_bytes=prefetched_images.get('hsg'))
+            _draw_extent_labels(c, *bbox5, x, map_top5 - map_h, map_w, map_h)
+        except Exception:
             c.setFillColor(GREY)
-            c.drawString(col_a, y, 'Land cover')
-            c.drawString(col_b, y, 'Soil group')
-            c.drawString(col_c, y, 'Area share')
-            c.drawString(col_d, y, 'CN')
-            y -= 3 * mm
-            c.setStrokeColor(colors.HexColor('#cccccc'))
-            c.line(x, y, page_w - margin, y)
-            y -= 5 * mm
-            c.setFont('Helvetica', 8.5)
-            row_i = 0
-            for row in breakdown:
-                if y < margin + 10 * mm:
-                    c.showPage()
-                    y = page_h - margin
-                    c.setFont('Helvetica', 8.5)
-                if row_i % 2 == 0:
-                    c.setFillColor(colors.HexColor('#f9f8f5'))
-                    c.rect(x, y - 1.5 * mm, page_w - 2 * margin, 6 * mm, fill=1, stroke=0)
-                c.setFillColor(colors.black)
-                c.drawString(col_a + 1 * mm, y, row['landcover'])
-                c.drawString(col_b, y, row['hsg'])
-                c.drawString(col_c, y, f"{row['pct']:.0f}%")
-                c.drawString(col_d, y, str(row['cn']))
-                y -= 6 * mm
-                row_i += 1
-            y -= 3 * mm
-    else:
-        c.setFillColor(GREY)
-        c.setFont('Helvetica', 9)
-        c.drawString(x, y, 'NA — could not sample enough classified points across the watershed to compute a composite CN.')
-        y -= 10 * mm
+            c.setFont('Helvetica', 9)
+            c.drawCentredString(x + map_w / 2, map_top5 - map_h / 2, 'Hydrologic soil group layer unavailable')
 
-    cn_note = (
-        'Curve numbers assume "good" hydrologic condition and average antecedent moisture (AMC II), per TR-55 Table 2-2. '
-        'Land-cover classes are crosswalked to the nearest standard TR-55 cover type (see the note above); Built area uses a '
-        'generic residential (~38% impervious) proxy since remote sensing does not indicate density. Water and Snow/Ice/Clouds '
-        'pixels are excluded from, or fixed in, the weighting as noted above. This is a grid-sample estimate, not a full zonal-'
-        'statistics computation over the exact watershed polygon — treat it as indicative, and verify against site-specific '
-        'soil survey and land-use data before using it in design calculations.'
-    )
-    c.setFont('Helvetica-Oblique', 7)
-    c.setFillColor(GREY)
-    cn_note_lines = simpleSplit(cn_note, 'Helvetica-Oblique', 7, map_w)
-    for line in cn_note_lines:
-        if y < margin + 8 * mm:
+        c.setFillColor(GREY)
+        c.setFont('Helvetica-Oblique', 7)
+        c.drawString(x, map_top5 - map_h - 5 * mm,
+                     'Map 5 — hydrologic soil group (SCS/NRCS runoff-potential class, HYSOGs250m, 250m resolution) — used by the curve-number runoff method.')
+        y = map_top5 - map_h - 9 * mm
+        y = _draw_hsg_legend(c, x, y, map_w)
+        y -= 6 * mm
+
+        # Classification basis — what determines the A-D class, so the map isn't a black box.
+        c.setFillColor(DARK)
+        c.setFont('Helvetica-Bold', 8.5)
+        c.drawString(x, y, 'How the class is determined')
+        y -= 4.5 * mm
+        hsg_basis_text = (
+            "Classes are based on the soil's intrinsic ability to absorb water, not on rainfall, land cover, or slope: "
+            '(1) soil texture — sand/silt/clay proportions, the main driver of infiltration rate; '
+            '(2) depth to a restrictive layer — bedrock, hardpan, or another dense layer that blocks downward drainage; '
+            '(3) depth to the water table — how much unsaturated capacity the soil has left; and '
+            '(4) saturated hydraulic conductivity (Ksat) — the direct physical measurement the other three are proxies for. '
+            'A = deep, well-drained, high infiltration (low runoff); D = clay-dominated, shallow, or a high water table, '
+            'with infiltration severely restricted (high runoff). This dataset estimates the class from texture and bedrock-depth '
+            'data, since Ksat is not measured directly at global scale.'
+        )
+        c.setFont('Helvetica', 7.5)
+        c.setFillColor(colors.HexColor('#333333'))
+        hsg_lines = simpleSplit(hsg_basis_text, 'Helvetica', 7.5, map_w)
+        for line in hsg_lines:
+            if y < margin + 8 * mm:
+                c.showPage()
+                y = page_h - margin
+                c.setFont('Helvetica', 7.5)
+                c.setFillColor(colors.HexColor('#333333'))
+            c.drawString(x, y, line)
+            y -= 3.6 * mm
+        y -= 8 * mm
+
+        # ---- Composite curve number (SCS/NRCS method) ----
+        if y < margin + 40 * mm:
             c.showPage()
             y = page_h - margin
-            c.setFont('Helvetica-Oblique', 7)
-            c.setFillColor(GREY)
-        c.drawString(x, y, line)
-        y -= 3.4 * mm
-    y -= 8 * mm
+        c.setFillColor(DARK)
+        c.setFont('Helvetica-Bold', 13)
+        c.drawString(x, y, 'Composite curve number (SCS/NRCS method)')
+        y -= 7 * mm
 
-    # ---- Geomorphological Instantaneous Unit Hydrograph (GIUH) ----
-    if y < margin + 70 * mm:
-        c.showPage()
-        y = page_h - margin
-    c.setFillColor(DARK)
-    c.setFont('Helvetica-Bold', 13)
-    c.drawString(x, y, 'Geomorphological Instantaneous Unit Hydrograph (GIUH)')
-    y -= 6 * mm
-    c.setFont('Helvetica-Oblique', 8)
-    c.setFillColor(GREY)
-    c.drawString(x, y, 'Rodriguez-Iturbe & Valdes (1979) / Rosso (1984) — the IUH shape derived from the basin\'s own stream network, no calibration.')
-    y -= 8 * mm
-
-    if giuh_info and giuh_info.get('available'):
-        g = giuh_info
-        # Horton ratios, as a compact 3-up stat row
-        stat_w = map_w / 3.0
-        stats = [('RB — bifurcation ratio', f"{g['RB']:.2f}"),
-                 ('RL — length ratio', f"{g['RL']:.2f}"),
-                 ('RA — area ratio', f"{g['RA']:.2f}")]
-        for i, (label, val) in enumerate(stats):
-            sx = x + i * stat_w
+        if cn_info and cn_info.get('composite_cn') is not None:
+            cn_val = cn_info['composite_cn']
+            n_valid = cn_info.get('n_valid', 0)
+            n_sampled = cn_info.get('n_sampled', 0)
             c.setFillColor(TEAL_DARK)
-            c.setFont('Helvetica-Bold', 18)
-            c.drawString(sx, y - 6 * mm, val)
+            c.setFont('Helvetica-Bold', 22)
+            c.drawString(x, y - 5 * mm, f'CN = {cn_val:.0f}')
             c.setFillColor(GREY)
-            c.setFont('Helvetica', 7.5)
-            c.drawString(sx, y - 10.5 * mm, label)
-        y -= 16 * mm
+            c.setFont('Helvetica', 8.5)
+            c.drawString(x + 40 * mm, y - 3.5 * mm,
+                         f'Area-weighted across {n_valid} of {n_sampled} sampled points inside the watershed boundary,')
+            c.drawString(x + 40 * mm, y - 7.5 * mm,
+                         'each classified by land cover and hydrologic soil group, per TR-55.')
+            y -= 15 * mm
 
-        c.setFillColor(colors.black)
-        c.setFont('Helvetica', 8.5)
-        c.drawString(x, y, f"Basin (Strahler) order Ω = {g['omega']}   ·   "
-                            f"main-stream length LΩ = {g['main_stream_length_km']:.2f} km   ·   "
-                            f"characteristic velocity V = {g['velocity_km_per_hr']:.2f} km/h")
-        y -= 5 * mm
-        c.drawString(x, y, f"Gamma-IUH shape n = {g['n_shape']:.2f}   ·   scale k = {g['k_scale_hr']:.2f} h   ·   "
-                            f"peak time tp = {g['tp_min']:.0f} min   ·   peak ordinate qp = {g['qp_per_hr']:.4f} /h")
-        y -= 9 * mm
+            breakdown = cn_info.get('breakdown') or []
+            if breakdown:
+                col_a, col_b, col_c, col_d = x, x + 62 * mm, x + 90 * mm, x + 118 * mm
+                c.setFont('Helvetica-Bold', 8.5)
+                c.setFillColor(GREY)
+                c.drawString(col_a, y, 'Land cover')
+                c.drawString(col_b, y, 'Soil group')
+                c.drawString(col_c, y, 'Area share')
+                c.drawString(col_d, y, 'CN')
+                y -= 3 * mm
+                c.setStrokeColor(colors.HexColor('#cccccc'))
+                c.line(x, y, page_w - margin, y)
+                y -= 5 * mm
+                c.setFont('Helvetica', 8.5)
+                row_i = 0
+                for row in breakdown:
+                    if y < margin + 10 * mm:
+                        c.showPage()
+                        y = page_h - margin
+                        c.setFont('Helvetica', 8.5)
+                    if row_i % 2 == 0:
+                        c.setFillColor(colors.HexColor('#f9f8f5'))
+                        c.rect(x, y - 1.5 * mm, page_w - 2 * margin, 6 * mm, fill=1, stroke=0)
+                    c.setFillColor(colors.black)
+                    c.drawString(col_a + 1 * mm, y, row['landcover'])
+                    c.drawString(col_b, y, row['hsg'])
+                    c.drawString(col_c, y, f"{row['pct']:.0f}%")
+                    c.drawString(col_d, y, str(row['cn']))
+                    y -= 6 * mm
+                    row_i += 1
+                y -= 3 * mm
+        else:
+            c.setFillColor(GREY)
+            c.setFont('Helvetica', 9)
+            c.drawString(x, y, 'NA — could not sample enough classified points across the watershed to compute a composite CN.')
+            y -= 10 * mm
 
-        chart_h = 42 * mm
-        if y - chart_h < margin + 20 * mm:
-            c.showPage()
-            y = page_h - margin
-        curve = g.get('curve') or []
-        t_vals = [pt['t_hr'] for pt in curve]
-        u_vals = [pt['u'] for pt in curve]
-        _draw_line_chart(c, x, y - chart_h, map_w, chart_h, t_vals, u_vals,
-                          'hours', 'u(t), 1/h', TEAL_DARK, 'Instantaneous unit hydrograph u(t)', GREY, DARK,
-                          mark_x=g['tp_hr'])
-        y -= (chart_h + 6 * mm)
-
-        giuh_note = (
-            'RB and RL come directly from the Strahler stream order carried on each delineated reach (grouped counts and mean '
-            'lengths per order). RA (area ratio) has no per-order sub-basin polygon available, so it is approximated by '
-            'reconstructing the reach network\'s upstream/downstream topology from shared endpoint coordinates and estimating '
-            'each order\'s mean upstream drainage area as (cumulative upstream stream length) / (basin-average drainage '
-            'density) — a standard estimator for basins with roughly uniform drainage density, not a true zonal computation. '
-            'The characteristic channel velocity V is back-calculated from the basin\'s own Kirpich time of concentration '
-            '(V = LΩ / Tc) so no additional empirical constant is introduced. Convolve u(t) with excess rainfall '
-            '(from the composite curve number above) to obtain a direct-runoff hydrograph for a design storm.'
+        cn_note = (
+            'Curve numbers assume "good" hydrologic condition and average antecedent moisture (AMC II), per TR-55 Table 2-2. '
+            'Land-cover classes are crosswalked to the nearest standard TR-55 cover type (see the note above); Built area uses a '
+            'generic residential (~38% impervious) proxy since remote sensing does not indicate density. Water and Snow/Ice/Clouds '
+            'pixels are excluded from, or fixed in, the weighting as noted above. This is a grid-sample estimate, not a full zonal-'
+            'statistics computation over the exact watershed polygon — treat it as indicative, and verify against site-specific '
+            'soil survey and land-use data before using it in design calculations.'
         )
         c.setFont('Helvetica-Oblique', 7)
         c.setFillColor(GREY)
-        giuh_note_lines = simpleSplit(giuh_note, 'Helvetica-Oblique', 7, map_w)
-        for line in giuh_note_lines:
+        cn_note_lines = simpleSplit(cn_note, 'Helvetica-Oblique', 7, map_w)
+        for line in cn_note_lines:
             if y < margin + 8 * mm:
                 c.showPage()
                 y = page_h - margin
@@ -1417,11 +1362,86 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
             c.drawString(x, y, line)
             y -= 3.4 * mm
         y -= 8 * mm
-    else:
+
+        # ---- Geomorphological Instantaneous Unit Hydrograph (GIUH) ----
+        if y < margin + 70 * mm:
+            c.showPage()
+            y = page_h - margin
+        c.setFillColor(DARK)
+        c.setFont('Helvetica-Bold', 13)
+        c.drawString(x, y, 'Geomorphological Instantaneous Unit Hydrograph (GIUH)')
+        y -= 6 * mm
+        c.setFont('Helvetica-Oblique', 8)
         c.setFillColor(GREY)
-        c.setFont('Helvetica', 9)
-        c.drawString(x, y, 'NA — the delineated reach network did not carry enough distinct Strahler stream orders to derive Horton ratios.')
-        y -= 10 * mm
+        c.drawString(x, y, 'Rodriguez-Iturbe & Valdes (1979) / Rosso (1984) — the IUH shape derived from the basin\'s own stream network, no calibration.')
+        y -= 8 * mm
+
+        if giuh_info and giuh_info.get('available'):
+            g = giuh_info
+            # Horton ratios, as a compact 3-up stat row
+            stat_w = map_w / 3.0
+            stats = [('RB — bifurcation ratio', f"{g['RB']:.2f}"),
+                     ('RL — length ratio', f"{g['RL']:.2f}"),
+                     ('RA — area ratio', f"{g['RA']:.2f}")]
+            for i, (label, val) in enumerate(stats):
+                sx = x + i * stat_w
+                c.setFillColor(TEAL_DARK)
+                c.setFont('Helvetica-Bold', 18)
+                c.drawString(sx, y - 6 * mm, val)
+                c.setFillColor(GREY)
+                c.setFont('Helvetica', 7.5)
+                c.drawString(sx, y - 10.5 * mm, label)
+            y -= 16 * mm
+
+            c.setFillColor(colors.black)
+            c.setFont('Helvetica', 8.5)
+            c.drawString(x, y, f"Basin (Strahler) order Ω = {g['omega']}   ·   "
+                                f"main-stream length LΩ = {g['main_stream_length_km']:.2f} km   ·   "
+                                f"characteristic velocity V = {g['velocity_km_per_hr']:.2f} km/h")
+            y -= 5 * mm
+            c.drawString(x, y, f"Gamma-IUH shape n = {g['n_shape']:.2f}   ·   scale k = {g['k_scale_hr']:.2f} h   ·   "
+                                f"peak time tp = {g['tp_min']:.0f} min   ·   peak ordinate qp = {g['qp_per_hr']:.4f} /h")
+            y -= 9 * mm
+
+            chart_h = 42 * mm
+            if y - chart_h < margin + 20 * mm:
+                c.showPage()
+                y = page_h - margin
+            curve = g.get('curve') or []
+            t_vals = [pt['t_hr'] for pt in curve]
+            u_vals = [pt['u'] for pt in curve]
+            _draw_line_chart(c, x, y - chart_h, map_w, chart_h, t_vals, u_vals,
+                              'hours', 'u(t), 1/h', TEAL_DARK, 'Instantaneous unit hydrograph u(t)', GREY, DARK,
+                              mark_x=g['tp_hr'])
+            y -= (chart_h + 6 * mm)
+
+            giuh_note = (
+                'RB and RL come directly from the Strahler stream order carried on each delineated reach (grouped counts and mean '
+                'lengths per order). RA (area ratio) has no per-order sub-basin polygon available, so it is approximated by '
+                'reconstructing the reach network\'s upstream/downstream topology from shared endpoint coordinates and estimating '
+                'each order\'s mean upstream drainage area as (cumulative upstream stream length) / (basin-average drainage '
+                'density) — a standard estimator for basins with roughly uniform drainage density, not a true zonal computation. '
+                'The characteristic channel velocity V is back-calculated from the basin\'s own Kirpich time of concentration '
+                '(V = LΩ / Tc) so no additional empirical constant is introduced. Convolve u(t) with excess rainfall '
+                '(from the composite curve number above) to obtain a direct-runoff hydrograph for a design storm.'
+            )
+            c.setFont('Helvetica-Oblique', 7)
+            c.setFillColor(GREY)
+            giuh_note_lines = simpleSplit(giuh_note, 'Helvetica-Oblique', 7, map_w)
+            for line in giuh_note_lines:
+                if y < margin + 8 * mm:
+                    c.showPage()
+                    y = page_h - margin
+                    c.setFont('Helvetica-Oblique', 7)
+                    c.setFillColor(GREY)
+                c.drawString(x, y, line)
+                y -= 3.4 * mm
+            y -= 8 * mm
+        else:
+            c.setFillColor(GREY)
+            c.setFont('Helvetica', 9)
+            c.drawString(x, y, 'NA — the delineated reach network did not carry enough distinct Strahler stream orders to derive Horton ratios.')
+            y -= 10 * mm
 
     # ---- Morphology table ----
     if y < 60 * mm:
@@ -1548,11 +1568,11 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
         y -= 10 * mm
 
     relief_note = (
-        'Hypsometry samples elevation on the same watershed-interior grid used for the composite curve number, via '
+        'Hypsometry samples elevation on a regular grid of points inside the watershed boundary, via '
         'OpenTopoData (SRTM 90m). The hypsometric integral is the area under the relative-elevation vs. relative-area '
         'curve (trapezoidal integration), equivalently (Zmean − Zmin) / (Zmax − Zmin) — Pike & Wilson (1971). '
         'The main channel is traced from the outlet by following, at each confluence, the tributary with the greater '
-        'cumulative upstream stream length (the same reach topology reconstructed for the GIUH above), then resampled '
+        'cumulative upstream stream length (reach topology reconstructed from shared reach endpoints), then resampled '
         'to 30 points along its length for elevation lookup. Both are grid/point-sample estimates, not a full DEM zonal '
         'computation — treat the exact integral and profile shape as indicative.'
     )
@@ -1747,8 +1767,8 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
     c.setFont('Helvetica-Oblique', 7)
     c.drawString(x, y - 1 * mm,
                  'Sources: Open-Meteo (open-meteo.com) for rainfall/ET0/humidity/wind; OpenStreetMap Nominatim for land use and population, where tagged; '
-                 'Esri/Impact Observatory Sentinel-2 10m Land Cover for land cover class; ISRIC SoilGrids for dominant soil type; '
-                 'HYSOGs250m (ORNL DAAC) for hydrologic soil group.')
+                 'Esri/Impact Observatory Sentinel-2 10m Land Cover for land cover class; ISRIC SoilGrids for dominant soil type'
+                 + ('; HYSOGs250m (ORNL DAAC) for hydrologic soil group.' if RUNOFF_ENABLED else '.'))
     y -= 8 * mm
 
     # ---- Monthly climate averages (multi-year calendar-month normals) ----
@@ -1913,32 +1933,33 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
     eq_line('Lag time = 0.6 · T_{c}')
     y -= 2 * mm
 
-    eq_heading('Composite curve number (SCS/NRCS)')
-    eq_line('CN_{composite} = Σ (CN_{i} · n_{i}) / Σ n_{i}', size=12.5)
-    eq_note('n(i) = number of sampled points inside the watershed classified with curve number CN(i) '
-            '(from the land-cover / hydrologic-soil-group pair at that point).')
+    if RUNOFF_ENABLED:
+        eq_heading('Composite curve number (SCS/NRCS)')
+        eq_line('CN_{composite} = Σ (CN_{i} · n_{i}) / Σ n_{i}', size=12.5)
+        eq_note('n(i) = number of sampled points inside the watershed classified with curve number CN(i) '
+                '(from the land-cover / hydrologic-soil-group pair at that point).')
 
-    eq_heading('Geomorphological Instantaneous Unit Hydrograph (GIUH) — Horton ratios')
-    eq_line('R_{B} = geometric mean of (N_{ω} / N_{ω+1})   — bifurcation ratio')
-    eq_line('R_{L} = geometric mean of (L_{ω+1} / L_{ω})   — length ratio')
-    eq_line('R_{A} = geometric mean of (A_{ω+1} / A_{ω})   — area ratio')
-    eq_note('ω = Strahler stream order (1 … Ω, the outlet’s order); Nω = number of streams of order ω; '
-            'Lω = their mean length; Aω = their mean upstream drainage area (see the GIUH note above for how '
-            'Aω is estimated when no per-order sub-basin polygon is available).')
+        eq_heading('Geomorphological Instantaneous Unit Hydrograph (GIUH) — Horton ratios')
+        eq_line('R_{B} = geometric mean of (N_{ω} / N_{ω+1})   — bifurcation ratio')
+        eq_line('R_{L} = geometric mean of (L_{ω+1} / L_{ω})   — length ratio')
+        eq_line('R_{A} = geometric mean of (A_{ω+1} / A_{ω})   — area ratio')
+        eq_note('ω = Strahler stream order (1 … Ω, the outlet’s order); Nω = number of streams of order ω; '
+                'Lω = their mean length; Aω = their mean upstream drainage area (see the GIUH note above for how '
+                'Aω is estimated when no per-order sub-basin polygon is available).')
 
-    eq_heading('GIUH — Rosso (1984) two-parameter gamma instantaneous unit hydrograph')
-    eq_line('n = 3.29 · (R_{B}/R_{A})^{0.78} · R_{L}^{0.07}     — shape parameter', size=12.5)
-    eq_line('k = 0.70 · (R_{B}/R_{A})^{-0.48} · R_{L}^{0.48} · (L_{Ω} / V)     — scale parameter (hours)', size=12.5)
-    eq_line('t_{p} = (n − 1) · k     — time to peak')
-    eq_line('u(t) = [1 / (k · Γ(n))] · (t/k)^{n−1} · e^{−t/k}     — the plotted hydrograph ordinate')
-    eq_note('V = characteristic channel velocity, back-calculated as LΩ / Tc so no additional empirical '
-            'constant is introduced beyond what this report already computes. Γ(n) is the gamma function.')
+        eq_heading('GIUH — Rosso (1984) two-parameter gamma instantaneous unit hydrograph')
+        eq_line('n = 3.29 · (R_{B}/R_{A})^{0.78} · R_{L}^{0.07}     — shape parameter', size=12.5)
+        eq_line('k = 0.70 · (R_{B}/R_{A})^{-0.48} · R_{L}^{0.48} · (L_{Ω} / V)     — scale parameter (hours)', size=12.5)
+        eq_line('t_{p} = (n − 1) · k     — time to peak')
+        eq_line('u(t) = [1 / (k · Γ(n))] · (t/k)^{n−1} · e^{−t/k}     — the plotted hydrograph ordinate')
+        eq_note('V = characteristic channel velocity, back-calculated as LΩ / Tc so no additional empirical '
+                'constant is introduced beyond what this report already computes. Γ(n) is the gamma function.')
 
     # ---- Footer ----
     c.setFont('Helvetica-Oblique', 7)
     c.setFillColor(GREY)
     c.drawString(margin, 10 * mm,
-                 'Manabi — free, open-source watershed delineation for Egypt. '
+                 'Manabi — free, open-source watershed delineation for the Middle East & North Africa. '
                  'Delineation: MERIT-Hydro/MERIT-Basins via mghydro.com. Elevation: OpenTopoData (SRTM 90m).')
 
     c.showPage()
@@ -2922,22 +2943,41 @@ def delineate():
         lng = data.get('lng')
         if lat is None or lng is None:
             return jsonify({'error': 'Latitude and longitude parameters are required.'}), 400
+        try:
+            lat, lng = float(lat), float(lng)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Latitude and longitude must be numbers.'}), 400
+        if not in_mena_bbox(lat, lng):
+            return jsonify({'error': 'That point is outside the Middle East & North Africa. '
+                                     'This tool covers Morocco to Iran and Turkey to Yemen/Sudan.'}), 400
 
         headers = {'User-Agent': 'Mozilla/5.0'}
 
-        wshed_url = f"https://mghydro.com/app/watershed_api?lat={lat}&lng={lng}&precision=high"
-        req = urllib.request.Request(wshed_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=25) as response:
-            watershed_data = json.loads(response.read().decode('utf-8'))
+        def fetch_json(url, timeout):
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return json.loads(response.read().decode('utf-8'))
 
-        rivers_data = None
-        try:
-            rivers_url = f"https://mghydro.com/app/upstream_rivers_api?lat={lat}&lng={lng}"
-            req2 = urllib.request.Request(rivers_url, headers=headers)
-            with urllib.request.urlopen(req2, timeout=25) as response2:
-                rivers_data = json.loads(response2.read().decode('utf-8'))
-        except Exception:
-            rivers_data = None
+        def fetch_rivers():
+            try:
+                return fetch_json(f"https://mghydro.com/app/upstream_rivers_api?lat={lat}&lng={lng}", 40)
+            except Exception:
+                return None
+
+        # Rivers run alongside the watershed call. The watershed tries high
+        # precision first and falls back to low precision if that times out or
+        # fails (large basins like the Nile or Tigris-Euphrates), keeping the
+        # worst case (20s + 25s) inside the function's 60s maxDuration.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            f_rivers = ex.submit(fetch_rivers)
+            wshed_base = f"https://mghydro.com/app/watershed_api?lat={lat}&lng={lng}"
+            try:
+                watershed_data = fetch_json(wshed_base + '&precision=high', 20)
+                precision = 'high'
+            except Exception:
+                watershed_data = fetch_json(wshed_base + '&precision=low', 25)
+                precision = 'low'
+            rivers_data = f_rivers.result()
 
         props = {}
         if watershed_data.get('features'):
@@ -2973,7 +3013,8 @@ def delineate():
             'watershed': watershed_data,
             'rivers': rivers_data,
             'outlets': outlets_geojson,
-            'morphology': morphology
+            'morphology': morphology,
+            'precision': precision
         }), 200
     except Exception as e:
         return jsonify({'error': f'Server error: {str(e)}'}), 500
@@ -3006,7 +3047,7 @@ def report():
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
             f_geo = ex.submit(reverse_geocode, lat, lng)
             f_env = ex.submit(fetch_environmental_context, lat, lng)
-            f_cn = ex.submit(compute_composite_cn, watershed_geojson)
+            f_cn = ex.submit(compute_composite_cn, watershed_geojson) if RUNOFF_ENABLED else None
             f_relief = ex.submit(compute_relief_hypsometry_and_profile, watershed_geojson, rivers_geojson, lat, lng, relief_area_km2)
             try:
                 geo_info = f_geo.result(timeout=15)
@@ -3017,7 +3058,7 @@ def report():
             except Exception:
                 env_info = {}
             try:
-                cn_info = f_cn.result(timeout=25)
+                cn_info = f_cn.result(timeout=25) if f_cn else None
             except Exception:
                 cn_info = None
             try:
@@ -3028,15 +3069,17 @@ def report():
         wiki_title = geo_info.get('place') or geo_info.get('region')
         wiki_info = wikipedia_summary(wiki_title)
 
+        giuh_info = None
         try:
             morph = morphology or {}
-            giuh_info = compute_giuh(
-                rivers_geojson, lat, lng,
-                morph.get('area_km2'),
-                morph.get('drainage_density_km_per_km2'),
-                morph.get('main_stream_length_km'),
-                morph.get('time_of_concentration_min'),
-            )
+            if RUNOFF_ENABLED:
+                giuh_info = compute_giuh(
+                    rivers_geojson, lat, lng,
+                    morph.get('area_km2'),
+                    morph.get('drainage_density_km_per_km2'),
+                    morph.get('main_stream_length_km'),
+                    morph.get('time_of_concentration_min'),
+                )
         except Exception:
             giuh_info = None
 
@@ -3056,4 +3099,4 @@ def report():
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def catch_all(path):
-    return jsonify({'message': 'Egypt Watersheds API active'}), 200
+    return jsonify({'message': 'MENA Watersheds API active'}), 200

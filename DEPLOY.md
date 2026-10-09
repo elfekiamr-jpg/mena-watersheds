@@ -1,35 +1,23 @@
-# Deploying as a real website
+# Deploying as a real website (Docker/VPS)
+
+This is the self-hosted path, which runs `delineator` locally. The main deployment
+is Vercel (see VERCEL_DEPLOY.md), which needs no local data.
 
 ## Pick a host
 
-The app needs a real VPS (not a bare static host) since it runs Python +
-geopandas/rasterio and caches hydrology data for megabasin 17 (the whole
-Nile Basin — Delta through Sudan, Ethiopia and the Lake Victoria region,
-not just Egypt's slice of it).
+The app needs a real VPS (not a bare static host), since it runs Python +
+geopandas/rasterio and stores MERIT hydrology data on disk.
 
-**Size this up before you commit to a plan.** KSA's single basin (29, the
-whole Arabian Peninsula) already needed "a few hundred MB–low GB" and a
-real VPS. Basin 17 covers a river system spanning 11 countries and is
-almost certainly bigger — I haven't been able to measure the actual
-download size myself (network access here doesn't reach mghydro.com's
-data host). Run `python predownload.py` once, locally, and check the
-resulting size of `delineator_data/` before picking a host — it tells you
-whether the numbers below are still realistic or need bumping up.
+**Disk is the main constraint.** MENA spans nine megabasins (11, 14, 15, 16, 17,
+21, 22, 28, 29; see README.md). Their full data, measured on mghydro.com, is
+1.0–3.3 GB per basin and about **17 GB** in total. Each basin downloads the first
+time a click lands in it, so plan for all of it. Starting points:
 
-Starting point, cheapest-that-won't-struggle **assuming basin 17 is
-roughly the same order of magnitude as basin 29 was**:
+- **Hetzner Cloud CX22**: 2 vCPU / 4 GB RAM / 40 GB disk, ~€4.6/month.
+- **DigitalOcean Basic Droplet**: 2 GB RAM / 50 GB disk, $12/month.
 
-- **Hetzner Cloud CX22** — 2 vCPU / 4 GB RAM / 40 GB disk, ~€4.6/month.
-- **DigitalOcean Basic Droplet** — 2 GB RAM / 50 GB disk, $12/month.
-
-If basin 17 turns out to be several times bigger (plausible, given it's
-several times the geographic area), step up disk size accordingly —
-Hetzner CX32 (80 GB disk, ~€8.5/month) or DigitalOcean's next tier up are
-the easy answers.
-
-Avoid free-tier PaaS (Render/Railway free, Heroku free) for this one —
-512 MB RAM is tight even for a basin-29-sized spatial index, and a
-basin-17-sized one is likely worse.
+Avoid free-tier PaaS (Render/Railway free, Heroku free): 512 MB RAM is too tight
+for these spatial indexes.
 
 You'll also want a domain (or subdomain) pointed at the server — any
 registrar works, you just need an **A record** aiming at the VPS's IP.
@@ -69,10 +57,9 @@ Give it real time depending on file size and your connection. Once it's
 up, visit `https://your-domain.com` — Caddy handles HTTPS for you, no
 certbot/nginx config needed.
 
-Sinai, Western Desert, north-Sinai/Mediterranean and Red-Sea-south-of-Suez
-clicks (basins 29, 15, 21, 11) aren't baked into the image — they download
-on first click instead, and persist across restarts in the `egypt_data`
-Docker volume that's already wired up in `docker-compose.yml`.
+Clicks in the other MENA megabasins aren't baked into the image. They download
+on first click instead, and persist across restarts in the `mena_data` Docker
+volume that's already wired up in `docker-compose.yml`.
 
 ## After deploying
 
@@ -91,7 +78,6 @@ long as `requirements.txt` hasn't changed.
 
 ## Costs to expect
 
-- VPS: ~€4.60–$12/month as a starting point — confirm against the actual
-  basin-17 size before committing (see above); could be more
+- VPS: ~€4.60–$12/month, with at least 40 GB disk for all of MENA's data
 - Domain: ~$10–15/year if you don't already have one
 - Data transfer/bandwidth: negligible at portfolio-project traffic levels

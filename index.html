@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Manabi — Egypt Watersheds</title>
+<title>Manabi — MENA Watersheds</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/esri-leaflet@3.0.12/dist/esri-leaflet.js"></script>
@@ -262,7 +262,7 @@
 </div>
 <div class="brand">
   <span class="eyebrow">Manabi &middot; منابع</span>
-  <h1>Watersheds of <span>Egypt</span></h1>
+  <h1>Watersheds of <span>MENA</span></h1>
   <p>Click any point to trace its upstream catchment or downstream flow path, using MERIT-Hydro elevation data.</p>
 </div>
 <div class="mode-toggle">
@@ -277,7 +277,7 @@
 <div class="overlay-toggle" id="overlay-toggle">
   <button data-overlay="landcover">Land cover</button>
   <button data-overlay="soil">Soil type</button>
-  <button data-overlay="hsg">Runoff group</button>
+  <button data-overlay="hsg" data-runoff>Runoff group</button>
 </div>
 <div class="layer-legend" id="layer-legend"></div>
 <div class="toast" id="toast"></div>
@@ -293,6 +293,7 @@
     <div class="stat">
       <div class="label">Drainage area</div>
       <div class="value" id="stat-area">—</div>
+      <div id="lowres-note" style="display:none;font-size:12px;color:var(--muted);margin-top:4px;">Low-resolution boundary: the high-resolution delineation took too long for this large basin.</div>
     </div>
     <div class="coord-row">
       <div class="stat">
@@ -312,7 +313,7 @@
     </div>
   </div>
   <div class="drawer-foot">
-    Delineation engine: <a href="https://pypi.org/project/delineator/" target="_blank">delineator</a> (MERIT-Hydro / MERIT-Basins, megabasin 17 for the Nile — Sinai/desert/Red Sea clicks use basins 29/15/21/11).
+    Delineation: MERIT-Hydro / MERIT-Basins via <a href="https://mghydro.com/watersheds" target="_blank">mghydro.com</a>. Coverage: the Middle East &amp; North Africa, Morocco to Iran and Turkey to Yemen/Sudan.
   </div>
 </div>
 <script>
@@ -320,14 +321,26 @@
 // Leave as empty string "" to default to relative path '/api/delineate'
 window.API_BASE_URL = "";
 
-const EGYPT_BOUNDS = [[19.0, 22.0], [34.0, 40.0]];
-const EGYPT_CENTER = [26.8, 30.8];
+// Runoff features (the "Runoff group" overlay) are off for the MENA build,
+// which does delineation only. Flip to true to bring them back; must match
+// RUNOFF_ENABLED in api/index.py.
+const RUNOFF_ENABLED = false;
+if (!RUNOFF_ENABLED) document.querySelectorAll('[data-runoff]').forEach(el => el.remove());
+
+// Clickable coverage: Morocco/Mauritania to Iran, Turkey to Yemen/Sudan, with a
+// small buffer. Must match MENA_BBOX in api/index.py, which enforces it.
+const MENA_BOUNDS = [[8.5, -17.5], [42.5, 63.5]];
+const MENA_CENTER = [28.0, 22.0];
 const map = L.map('map', {
   zoomControl: true,
-  minZoom: 4,
-  maxBounds: [[15, 18], [38, 44]],
+  minZoom: 3,
+  maxBounds: [[2, -25], [48, 70]],
   maxBoundsViscosity: 0.6,
-}).setView(EGYPT_CENTER, 6);
+}).setView(MENA_CENTER, 4);
+
+function inMena(lat, lng){
+  return L.latLngBounds(MENA_BOUNDS).contains([lat, lng]);
+}
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
 const CARTO_KEY = 'cb1_2anf_1_b33879543c02a6af4f4dcef0';
@@ -717,6 +730,11 @@ document.getElementById('dl-report').onclick = async () => {
 };
 
 async function runDelineation(lat, lng){
+  if (!inMena(lat, lng)){
+    showToast('That point is outside the Middle East &amp; North Africa. This tool covers Morocco to Iran and Turkey to Yemen/Sudan.', 'error');
+    setTimeout(hideToast, 4000);
+    return;
+  }
   hint.style.opacity = 0;
   showToast('<span class="spinner"></span>Delineating watershed…', 'loading');
   resultLayer.clearLayers();
@@ -772,6 +790,7 @@ async function runDelineation(lat, lng){
       (props.outlet_lat != null) ? `${props.outlet_lat}, ${props.outlet_lng}` : `${lat.toFixed(3)}, ${lng.toFixed(3)}`;
     document.getElementById('drawer-title').textContent =
       mode === 'up' ? 'Upstream watershed' : 'Downstream flow path';
+    document.getElementById('lowres-note').style.display = data.precision === 'low' ? 'block' : 'none';
     renderMorphology(data.morphology);
     lastMorphology = data.morphology;
     lastOutletLat = (props.outlet_lat != null) ? props.outlet_lat : lat;

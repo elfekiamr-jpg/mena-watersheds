@@ -1,28 +1,14 @@
 """
-Egypt Watersheds — backend
+MENA Watersheds — backend (Docker/VPS path)
 
 A thin Flask wrapper around the open-source `delineator` package
 (https://pypi.org/project/delineator/, MIT licensed, by Matthew Heberger),
-restricted to Egypt.
+restricted to the Middle East & North Africa.
 
-Unlike Saudi Arabia (a single MERIT/HydroSHEDS "megabasin"), Egypt's
-territory spans FIVE Pfafstetter level-2 megabasins (confirmed by checking
-megabasins.db directly, the same way the KSA build was):
-  - 17  the whole Nile Basin — Delta, Nile Valley, Lake Nasser, and (since
-        this is a real transboundary river) all the way upstream through
-        Sudan, South Sudan, Ethiopia and the Lake Victoria region too.
-        This is almost certainly the biggest/slowest basin to download.
-  - 29  Sinai Peninsula + Gulf of Suez / Gulf of Aqaba coast (same basin
-        the KSA build already uses for Arabia)
-  - 15  Western Desert (Siwa, the Great Sand Sea — mostly endorheic, no
-        real streams, but included for completeness)
-  - 21  North Sinai / Mediterranean-coast drainage
-  - 11  Red Sea coast south of Suez, incl. the Halayeb Triangle area
-`delineator` auto-detects the megabasin from the clicked point and
-downloads *only that basin's* data files the first time it's needed, so
-a click anywhere in Egypt works without any extra code here — but it does
-mean the very first click in each of these five regions triggers its own
-one-time download, and the Nile one (basin 17) is a big one. See README.md.
+MENA spans nine Pfafstetter level-2 megabasins: 11, 14, 15, 16, 17, 21, 22,
+28 and 29 (see README.md for what each covers). `delineator` auto-detects the
+megabasin from the clicked point and downloads *only that basin's* data files
+(1-3 GB each) the first time it's needed.
 
 Run:
     pip install -r requirements.txt
@@ -48,11 +34,10 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
-# Egypt bounding box, plus a buffer so watersheds that start just across
-# the border (Libya, Sudan, Israel/Gaza) still work, and so the Halayeb
-# Triangle area in the far south isn't clipped off.
+# MENA bounding box: Morocco/Mauritania to Iran, Turkey to Yemen/Sudan, plus a
+# small buffer. Matches MENA_BBOX in api/index.py and MENA_BOUNDS in index.html.
 # (lon_min, lat_min, lon_max, lat_max)
-EGYPT_BBOX = (24.5, 21.0, 37.5, 32.2)
+MENA_BBOX = (-17.5, 8.5, 63.5, 42.5)
 
 # A sane default for interactive use: rivers + outlets returned, results
 # cached per session so re-clicking near the same stream is instant, and
@@ -67,8 +52,8 @@ DEFAULT_CONFIG = DelineatorConfig(
 )
 
 
-def _in_egypt_bbox(lat: float, lng: float) -> bool:
-    lon_min, lat_min, lon_max, lat_max = EGYPT_BBOX
+def _in_mena_bbox(lat: float, lng: float) -> bool:
+    lon_min, lat_min, lon_max, lat_max = MENA_BBOX
     return lon_min <= lng <= lon_max and lat_min <= lat <= lat_max
 
 
@@ -101,9 +86,10 @@ def delineate_endpoint() -> Response:
     except (TypeError, ValueError):
         return jsonify({"error": "'lat' and 'lng' must be numeric."}), 400
 
-    if not _in_egypt_bbox(lat, lng):
+    if not _in_mena_bbox(lat, lng):
         return jsonify({
-            "error": "That point is outside the Egypt coverage area of this tool."
+            "error": "That point is outside the Middle East & North Africa. "
+                     "This tool covers Morocco to Iran and Turkey to Yemen/Sudan."
         }), 400
 
     logger.info("Delineating watershed at lat=%.4f, lng=%.4f", lat, lng)
@@ -140,9 +126,9 @@ def delineate_endpoint() -> Response:
 
 
 if __name__ == "__main__":
-    print("\n  Egypt Watersheds — local dev server")
-    print("  ------------------------------------")
+    print("\n  MENA Watersheds — local dev server")
+    print("  -----------------------------------")
     print("  Open http://127.0.0.1:5000 in your browser")
     print("  Each click auto-downloads its megabasin's data the first time")
-    print("  (Nile Valley clicks = basin 17, the big one — see README)\n")
+    print("  (1-3 GB per megabasin — see README)\n")
     app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False, threaded=True)

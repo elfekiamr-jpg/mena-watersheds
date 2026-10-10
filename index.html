@@ -277,7 +277,7 @@
 <div class="overlay-toggle" id="overlay-toggle">
   <button data-overlay="landcover">Land cover</button>
   <button data-overlay="soil">Soil type</button>
-  <button data-overlay="hsg" data-runoff>Runoff group</button>
+  <button data-overlay="hsg" data-cn>Runoff group</button>
 </div>
 <div class="layer-legend" id="layer-legend"></div>
 <div class="toast" id="toast"></div>
@@ -325,11 +325,15 @@
 // Leave as empty string "" to default to relative path '/api/delineate'
 window.API_BASE_URL = "";
 
-// Runoff features (the "Runoff group" overlay) are off for the MENA build,
-// which does delineation only. Flip to true to bring them back; must match
-// RUNOFF_ENABLED in api/index.py.
+// Runoff features (any element marked data-runoff) are off for the MENA
+// build. Flip to true to bring them back; must match RUNOFF_ENABLED in
+// api/index.py.
 const RUNOFF_ENABLED = false;
 if (!RUNOFF_ENABLED) document.querySelectorAll('[data-runoff]').forEach(el => el.remove());
+// Curve number features (the hydrologic soil group overlay) are on
+// independently of runoff; must match CN_ENABLED in api/index.py.
+const CN_ENABLED = true;
+if (!CN_ENABLED) document.querySelectorAll('[data-cn]').forEach(el => el.remove());
 
 // Clickable coverage: Morocco/Mauritania to Iran, Turkey to Yemen/Sudan, with a
 // small buffer. Must match MENA_BBOX in api/index.py, which enforces it.

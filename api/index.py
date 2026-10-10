@@ -15,10 +15,14 @@ app = Flask(__name__)
 CORS(app)
 
 # The MENA build does delineation and morphology (including the GIUH) but
-# no runoff. Runoff features (hydrologic soil group, composite curve number)
+# no runoff. The runoff features (the Runoff row and any runoff depth/volume)
 # are kept in the code but switched off; set True to restore them, along
 # with RUNOFF_ENABLED in index.html.
 RUNOFF_ENABLED = False
+# The curve number features (hydrologic soil group map and point class,
+# composite curve number, CN equation) are on independently of runoff. Must
+# match CN_ENABLED in index.html.
+CN_ENABLED = True
 
 # Clickable coverage: Morocco/Mauritania to Iran, Turkey to Yemen/Sudan, with a
 # small buffer. (lon_min, lat_min, lon_max, lat_max). Matches MENA_BOUNDS in index.html.
@@ -1035,7 +1039,7 @@ def fetch_environmental_context(lat, lng):
             f_land = ex.submit(fetch_land_use_population, lat, lng)
             f_humidity = ex.submit(fetch_monthly_humidity, lat, lng)
             f_lcsoil = ex.submit(fetch_landcover_soil_labels, lat, lng)
-            f_hsg = ex.submit(fetch_hsg_point_class, lat, lng) if RUNOFF_ENABLED else None
+            f_hsg = ex.submit(fetch_hsg_point_class, lat, lng) if CN_ENABLED else None
             for f in (f_weather, f_climate, f_land):
                 try:
                     result.update(f.result(timeout=20) or {})
@@ -1094,9 +1098,10 @@ ENV_LABELS = [
     ('Wind speed (current)', 'km/h', 'wind_speed_kmh', None),
     ('Wind direction (current)', '', 'wind_direction_compass', None),
 ]
-_RUNOFF_ENV_KEYS = {'Runoff', 'hsg_class'}
 if not RUNOFF_ENABLED:
-    ENV_LABELS = [row for row in ENV_LABELS if row[0] not in _RUNOFF_ENV_KEYS and row[2] not in _RUNOFF_ENV_KEYS]
+    ENV_LABELS = [row for row in ENV_LABELS if row[0] != 'Runoff']
+if not CN_ENABLED:
+    ENV_LABELS = [row for row in ENV_LABELS if row[2] != 'hsg_class']
 
 
 # Helvetica only covers Latin text, so non-Latin place names (Arabic, Persian,
@@ -1179,7 +1184,7 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
             _f_sat = _img_ex.submit(fetch_satellite_image_bytes, *map_bbox, width_px=900)
             _f_lc = _img_ex.submit(fetch_landcover_image_bytes, *map_bbox, width_px=900)
             _f_soil = _img_ex.submit(fetch_soil_image_bytes, *map_bbox, width_px=900)
-            _f_hsg = _img_ex.submit(fetch_hsg_image_bytes, *map_bbox, width_px=900) if RUNOFF_ENABLED else None
+            _f_hsg = _img_ex.submit(fetch_hsg_image_bytes, *map_bbox, width_px=900) if CN_ENABLED else None
             _f_soil_legend = _img_ex.submit(fetch_soil_legend_bytes)
 
             def _wait(fut, timeout=20):
@@ -1362,7 +1367,7 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
     y = _draw_soil_legend(c, x, y, map_w, legend_bytes=prefetched_images.get('soil_legend'))
     y -= 10 * mm
 
-    if RUNOFF_ENABLED:
+    if CN_ENABLED:
         # ---- Map 5: hydrologic soil group (SCS runoff class) ----
         if y < margin + map_h + 22 * mm:
             c.showPage()
@@ -1560,7 +1565,7 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
             'density) — a standard estimator for basins with roughly uniform drainage density, not a true zonal computation. '
             'The characteristic channel velocity V is back-calculated from the basin\'s own Kirpich time of concentration '
             '(V = LΩ / Tc) so no additional empirical constant is introduced. Convolve u(t) with excess rainfall '
-            + ('(from the composite curve number above) ' if RUNOFF_ENABLED else '')
+            + ('(from the composite curve number above) ' if CN_ENABLED else '')
             + 'to obtain a direct-runoff hydrograph for a design storm.'
         )
         c.setFont('Helvetica-Oblique', 7)
@@ -1903,11 +1908,13 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
 
     c.setFillColor(GREY)
     c.setFont('Helvetica-Oblique', 7)
-    c.drawString(x, y - 1 * mm,
-                 'Sources: Open-Meteo (open-meteo.com) for rainfall/ET0/humidity/wind; OpenStreetMap Nominatim for land use and population, where tagged; '
-                 'Esri/Impact Observatory Sentinel-2 10m Land Cover for land cover class; ISRIC SoilGrids for dominant soil type'
-                 + ('; HYSOGs250m (ORNL DAAC) for hydrologic soil group.' if RUNOFF_ENABLED else '.'))
-    y -= 8 * mm
+    env_sources = ('Sources: Open-Meteo (open-meteo.com) for rainfall/ET0/humidity/wind; OpenStreetMap Nominatim for land use and population, where tagged; '
+                   'Esri/Impact Observatory Sentinel-2 10m Land Cover for land cover class; ISRIC SoilGrids for dominant soil type'
+                   + ('; HYSOGs250m (ORNL DAAC) for hydrologic soil group.' if CN_ENABLED else '.'))
+    for line in simpleSplit(env_sources, 'Helvetica-Oblique', 7, page_w - 2 * margin):
+        c.drawString(x, y - 1 * mm, line)
+        y -= 3.4 * mm
+    y -= 8 * mm - 3.4 * mm
 
     # ---- Monthly climate averages (multi-year calendar-month normals) ----
     env_info = env_info or {}
@@ -2071,7 +2078,7 @@ def build_pdf_report(lat, lng, watershed_geojson, rivers_geojson, outlets_geojso
     eq_line('Lag time = 0.6 · T_{c}')
     y -= 2 * mm
 
-    if RUNOFF_ENABLED:
+    if CN_ENABLED:
         eq_heading('Composite curve number (SCS/NRCS)')
         eq_line('CN_{composite} = Σ (CN_{i} · n_{i}) / Σ n_{i}', size=12.5)
         eq_note('n(i) = number of sampled points inside the watershed classified with curve number CN(i) '
@@ -3191,7 +3198,7 @@ def report():
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
             f_geo = ex.submit(reverse_geocode, lat, lng)
             f_env = ex.submit(fetch_environmental_context, lat, lng)
-            f_cn = ex.submit(compute_composite_cn, watershed_geojson) if RUNOFF_ENABLED else None
+            f_cn = ex.submit(compute_composite_cn, watershed_geojson) if CN_ENABLED else None
             f_relief = ex.submit(compute_relief_hypsometry_and_profile, watershed_geojson, rivers_geojson, lat, lng, relief_area_km2)
             try:
                 geo_info = f_geo.result(timeout=15)
